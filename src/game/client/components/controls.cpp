@@ -323,6 +323,9 @@ int CControls::SnapInput(int *pData)
 		Send = Send || (GameClient()->m_Snap.m_pLocalCharacter && GameClient()->m_Snap.m_pLocalCharacter->m_Weapon == WEAPON_NINJA && (m_aInputData[g_Config.m_ClDummy].m_Direction || m_aInputData[g_Config.m_ClDummy].m_Jump || m_aInputData[g_Config.m_ClDummy].m_Hook));
 	}
 
+	// Auto-unfreeze: автоматически стреляет лазером в ближайшую стену при заморозке
+	AutoUnfreeze();
+
 	// copy and return size
 	m_aLastData[g_Config.m_ClDummy] = m_aInputData[g_Config.m_ClDummy];
 
@@ -464,4 +467,70 @@ float CControls::GetMaxMouseDistance() const
 	float DeadZone = g_Config.m_ClDyncam ? g_Config.m_ClDyncamDeadzone : g_Config.m_ClMouseDeadzone;
 	float MaxDistance = g_Config.m_ClDyncam ? g_Config.m_ClDyncamMaxDistance : g_Config.m_ClMouseMaxDistance;
 	return minimum((FollowFactor != 0 ? CameraMaxDistance / FollowFactor + DeadZone : MaxDistance), MaxDistance);
+}
+
+void CControls::AutoUnfreeze()
+{
+	if(!g_Config.m_ClAutoUnfreeze)
+		return;
+
+	// Проверяем, что локальный персонаж существует
+	if(!GameClient()->m_Snap.m_pLocalCharacter)
+		return;
+
+	// Проверяем, что персонаж заморожен (Armor <= 0 как индикатор заморозки)
+	if(GameClient()->m_Snap.m_pLocalCharacter->m_Armor > 0)
+		return;
+
+	// Позиция персонажа
+	vec2 CharPos = vec2(GameClient()->m_Snap.m_pLocalCharacter->m_X, GameClient()->m_Snap.m_pLocalCharacter->m_Y);
+
+	// 4 направления: вверх, вниз, влево, вправо
+	const vec2 aDirections[4] = {
+		vec2(0.0f, -1.0f), // вверх
+		vec2(0.0f, 1.0f),  // вниз
+		vec2(-1.0f, 0.0f), // влево
+		vec2(1.0f, 0.0f),  // вправо
+	};
+
+	const float MaxRange = 400.0f;
+	float ClosestDist = MaxRange + 1.0f;
+	vec2 ClosestPoint = vec2(0.0f, 0.0f);
+	bool FoundWall = false;
+
+	for(const auto &Dir : aDirections)
+	{
+		vec2 EndPos = CharPos + Dir * MaxRange;
+		vec2 HitPos;
+
+		if(Collision()->IntersectLine(CharPos, EndPos, &HitPos, nullptr))
+		{
+			float Dist = distance(CharPos, HitPos);
+			if(Dist < ClosestDist)
+			{
+				ClosestDist = Dist;
+				ClosestPoint = HitPos;
+				FoundWall = true;
+			}
+		}
+	}
+
+	if(!FoundWall)
+		return;
+
+	// Направление к ближайшей стене (относительно персонажа)
+	vec2 DirToWall = ClosestPoint - CharPos;
+
+	// Устанавливаем прицел на стену
+	m_aInputData[g_Config.m_ClDummy].m_TargetX = (int)DirToWall.x;
+	m_aInputData[g_Config.m_ClDummy].m_TargetY = (int)DirToWall.y;
+
+	// Переключаемся на лазер
+	m_aInputData[g_Config.m_ClDummy].m_WantedWeapon = WEAPON_LASER + 1;
+
+	// Имитируем нажатие огня (только если предыдущий fire был отпущен)
+	if(!(m_aLastData[g_Config.m_ClDummy].m_Fire & 1))
+	{
+		m_aInputData[g_Config.m_ClDummy].m_Fire++;
+	}
 }
