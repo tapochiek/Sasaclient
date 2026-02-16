@@ -24,6 +24,7 @@ CControls::CControls()
 	std::fill(std::begin(m_aMousePosOnAction), std::end(m_aMousePosOnAction), vec2(0.0f, 0.0f));
 	std::fill(std::begin(m_aTargetPos), std::end(m_aTargetPos), vec2(0.0f, 0.0f));
 	std::fill(std::begin(m_aMouseInputType), std::end(m_aMouseInputType), EMouseInputType::ABSOLUTE);
+	m_LastWeaponBeforeFreeze = -1;
 }
 
 void CControls::OnReset()
@@ -323,7 +324,7 @@ int CControls::SnapInput(int *pData)
 		Send = Send || (GameClient()->m_Snap.m_pLocalCharacter && GameClient()->m_Snap.m_pLocalCharacter->m_Weapon == WEAPON_NINJA && (m_aInputData[g_Config.m_ClDummy].m_Direction || m_aInputData[g_Config.m_ClDummy].m_Jump || m_aInputData[g_Config.m_ClDummy].m_Hook));
 	}
 
-	// Auto-unfreeze: автоматически стреляет лазером в ближайшую стену при заморозке
+	// Auto-unfreeze
 	AutoUnfreeze();
 
 	// copy and return size
@@ -478,9 +479,24 @@ void CControls::AutoUnfreeze()
 	if(!GameClient()->m_Snap.m_pLocalCharacter)
 		return;
 
-	// Проверяем, что персонаж заморожен (Armor <= 0 как индикатор заморозки)
-	if(GameClient()->m_Snap.m_pLocalCharacter->m_Armor > 0)
+	bool IsFrozen = (GameClient()->m_Snap.m_pLocalCharacter->m_Armor <= 0);
+
+	// Умный возврат оружия: если мы только что разморозились — возвращаем предыдущее оружие
+	if(!IsFrozen)
+	{
+		if(m_LastWeaponBeforeFreeze != -1)
+		{
+			m_aInputData[g_Config.m_ClDummy].m_WantedWeapon = m_LastWeaponBeforeFreeze;
+			m_LastWeaponBeforeFreeze = -1;
+		}
 		return;
+	}
+
+	// Мы заморожены — сохраняем текущее оружие перед переключением на лазер
+	if(m_LastWeaponBeforeFreeze == -1)
+	{
+		m_LastWeaponBeforeFreeze = GameClient()->m_Snap.m_pLocalCharacter->m_Weapon + 1;
+	}
 
 	// Позиция персонажа
 	vec2 CharPos = vec2(GameClient()->m_Snap.m_pLocalCharacter->m_X, GameClient()->m_Snap.m_pLocalCharacter->m_Y);
@@ -528,9 +544,7 @@ void CControls::AutoUnfreeze()
 	// Переключаемся на лазер
 	m_aInputData[g_Config.m_ClDummy].m_WantedWeapon = WEAPON_LASER + 1;
 
-	// Имитируем нажатие огня (только если предыдущий fire был отпущен)
-	if(!(m_aLastData[g_Config.m_ClDummy].m_Fire & 1))
-	{
-		m_aInputData[g_Config.m_ClDummy].m_Fire++;
-	}
+	// Спамим выстрелом: каждый тик инкрементируем m_Fire,
+	// что переключает бит 0 (нажато/отпущено) и вызывает выстрел каждый второй тик
+	m_aInputData[g_Config.m_ClDummy].m_Fire++;
 }
