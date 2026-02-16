@@ -1,5 +1,6 @@
 # Contributing code to DDNet
 
+
 ## General
 
 Please open an issue first discussing the idea before starting to write code.
