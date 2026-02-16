@@ -784,3 +784,5 @@ MACRO_CONFIG_INT(ClVideoRecorderFPS, cl_video_recorder_fps, 60, 1, 1000, CFGFLAG
 /*
  * Add config variables for mods below this comment to avoid merge conflicts.
  */
+
+MACRO_CONFIG_INT(ClAutoUnfreeze, cl_auto_unfreeze, 0, 0, 1, CFGFLAG_CLIENT, "Enable auto-unfreeze self shooting")
