@@ -16,6 +16,7 @@
 #include <game/client/components/scoreboard.h>
 #include <game/client/gameclient.h>
 #include <game/collision.h>
+#include <game/mapitems.h>
 
 CControls::CControls()
 {
@@ -475,57 +476,96 @@ void CControls::AutoUnfreeze()
 	if(!g_Config.m_ClAutoUnfreeze)
 		return;
 
-	// Проверяем, что локальный персонаж существует
 	if(!GameClient()->m_Snap.m_pLocalCharacter)
 		return;
 
-	bool IsFrozen = (GameClient()->m_Snap.m_pLocalCharacter->m_Armor <= 0);
+	const CNetObj_Character *pChar = GameClient()->m_Snap.m_pLocalCharacter;
+	const bool IsFrozen = (pChar->m_Armor <= 0);
+	const vec2 CharPos = vec2((float)pChar->m_X, (float)pChar->m_Y);
 
-	// Умный возврат оружия: если мы только что разморозились — возвращаем предыдущее оружие
+	bool NeedUnfreeze = IsFrozen;
+
+	// ====================================================================
+	// PREDICTION SYSTEM: если ещё не заморожен — симулируем 10 тиков вперёд
+	// ====================================================================
 	if(!IsFrozen)
 	{
-		if(m_LastWeaponBeforeFreeze != -1)
+		// Скорость из снапшота (1/256 world-units/tick → world-units/tick)
+		vec2 SimVel = vec2(pChar->m_VelX / 256.0f, pChar->m_VelY / 256.0f);
+		vec2 SimPos = CharPos;
+
+		// Физические константы (соответствуют дефолтным тюнингам DDNet)
+		constexpr float Gravity = 0.5f;
+		constexpr float AirFriction = 0.95f;
+		constexpr int PredictionTicks = 10;
+
+		for(int i = 0; i < PredictionTicks; i++)
 		{
-			m_aInputData[g_Config.m_ClDummy].m_WantedWeapon = m_LastWeaponBeforeFreeze;
-			m_LastWeaponBeforeFreeze = -1;
+			// Шаг физики: гравитация → трение → сдвиг
+			SimVel.y += Gravity;
+			SimVel.x *= AirFriction;
+			SimPos += SimVel;
+
+			// Если попали в солид — дальше лететь некуда, прерываем
+			if(Collision()->CheckPoint(SimPos.x, SimPos.y))
+				break;
+
+			// Проверяем тайл на фриз (game-layer + front-layer)
+			const int MapIndex = Collision()->GetPureMapIndex(SimPos.x, SimPos.y);
+			const int TileIdx = Collision()->GetTileIndex(MapIndex);
+			const int FTileIdx = Collision()->GetFTileIndex(MapIndex);
+
+			if(TileIdx == TILE_FREEZE || FTileIdx == TILE_FREEZE ||
+				TileIdx == TILE_DFREEZE || FTileIdx == TILE_DFREEZE)
+			{
+				NeedUnfreeze = true;
+				break;
+			}
 		}
-		return;
+
+		// Угрозы нет — возвращаем оружие, если ранее сохраняли
+		if(!NeedUnfreeze)
+		{
+			if(m_LastWeaponBeforeFreeze != -1)
+			{
+				m_aInputData[g_Config.m_ClDummy].m_WantedWeapon = m_LastWeaponBeforeFreeze;
+				m_LastWeaponBeforeFreeze = -1;
+			}
+			return;
+		}
 	}
 
-	// Мы заморожены — сохраняем текущее оружие перед переключением на лазер
+	// ====================================================================
+	// ЛОГИКА АНФРИЗА (общая: и для реального фриза, и для предсказанного)
+	// ====================================================================
+
+	// 1. Сохраняем текущее оружие (один раз)
 	if(m_LastWeaponBeforeFreeze == -1)
-	{
-		m_LastWeaponBeforeFreeze = GameClient()->m_Snap.m_pLocalCharacter->m_Weapon + 1;
-	}
+		m_LastWeaponBeforeFreeze = pChar->m_Weapon + 1;
 
-	// Позиция персонажа
-	vec2 CharPos = vec2(GameClient()->m_Snap.m_pLocalCharacter->m_X, GameClient()->m_Snap.m_pLocalCharacter->m_Y);
-
-	// 4 направления: вверх, вниз, влево, вправо
+	// 2. Ищем ближайшую стену в 4 кардинальных направлениях
 	const vec2 aDirections[4] = {
 		vec2(0.0f, -1.0f), // вверх
-		vec2(0.0f, 1.0f),  // вниз
+		vec2(0.0f, 1.0f), // вниз
 		vec2(-1.0f, 0.0f), // влево
-		vec2(1.0f, 0.0f),  // вправо
+		vec2(1.0f, 0.0f), // вправо
 	};
 
-	const float MaxRange = 400.0f;
+	constexpr float MaxRange = 400.0f;
 	float ClosestDist = MaxRange + 1.0f;
-	vec2 ClosestPoint = vec2(0.0f, 0.0f);
+	vec2 DirToWall = vec2(1.0f, 0.0f); // fallback
 	bool FoundWall = false;
 
-	for(const auto &Dir : aDirections)
+	for(int d = 0; d < 4; d++)
 	{
-		vec2 EndPos = CharPos + Dir * MaxRange;
 		vec2 HitPos;
-
-		if(Collision()->IntersectLine(CharPos, EndPos, &HitPos, nullptr))
+		if(Collision()->IntersectLine(CharPos, CharPos + aDirections[d] * MaxRange, &HitPos, nullptr))
 		{
-			float Dist = distance(CharPos, HitPos);
+			const float Dist = distance(CharPos, HitPos);
 			if(Dist < ClosestDist)
 			{
 				ClosestDist = Dist;
-				ClosestPoint = HitPos;
+				DirToWall = HitPos - CharPos;
 				FoundWall = true;
 			}
 		}
@@ -534,17 +574,14 @@ void CControls::AutoUnfreeze()
 	if(!FoundWall)
 		return;
 
-	// Направление к ближайшей стене (относительно персонажа)
-	vec2 DirToWall = ClosestPoint - CharPos;
-
-	// Устанавливаем прицел на стену
+	// 3. Прицел на ближайшую стену
 	m_aInputData[g_Config.m_ClDummy].m_TargetX = (int)DirToWall.x;
 	m_aInputData[g_Config.m_ClDummy].m_TargetY = (int)DirToWall.y;
 
-	// Переключаемся на лазер
+	// 4. Переключаемся на лазер
 	m_aInputData[g_Config.m_ClDummy].m_WantedWeapon = WEAPON_LASER + 1;
 
-	// Спамим выстрелом: каждый тик инкрементируем m_Fire,
-	// что переключает бит 0 (нажато/отпущено) и вызывает выстрел каждый второй тик
+	// 5. Спам-огонь: инкремент m_Fire каждый тик переключает бит 0,
+	//    сервер воспринимает каждый инкремент как новый выстрел
 	m_aInputData[g_Config.m_ClDummy].m_Fire++;
 }
